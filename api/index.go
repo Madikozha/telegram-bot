@@ -7,7 +7,6 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
@@ -37,20 +36,16 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check for the command or text to trigger the keyboard
-	if update.Message.Text == "/start" {
-		sendKeyboard(bot, update.Message.Chat.ID)
-		return
-	}
+	// if update.Message.Text == "/start" {
+	// 	sendKeyboard(bot, update.Message.Chat.ID)
+	// 	return
+	// }
 
 	// Check for the specific message to respond with a joke
-	if strings.HasPrefix(update.Message.Text, "y") || strings.HasPrefix(update.Message.Text, "Y") {
-		sendRandomJoke(bot, update.Message.Chat.ID)
-		return
-	}
-
+	sendRandomJoke(bot, update.Message.Chat.ID)
 	// Default response
-	msg := tgbotapi.NewMessage(update.Message.Chat.ID, "I didn't understand that. Try saying 'yes'.\nExample: Yes or yes and etc.")
-	bot.Send(msg)
+	// msg := tgbotapi.NewMessage(update.Message.Chat.ID, "I didn't understand that. Try saying 'yes'.\nExample: Yes or yes and etc.")
+	// bot.Send(msg)
 
 	fmt.Fprintf(w, "Update processed")
 }
