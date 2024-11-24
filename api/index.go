@@ -41,22 +41,47 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	bot.Debug = true
 	log.Printf("Authorized as %s", bot.Self.UserName)
 
-	// Configure updates channel
-	updateConfig := tgbotapi.NewUpdate(0)
-	updateConfig.Timeout = 60
-	updates, err := bot.GetUpdatesChan(updateConfig)
+	// Delete existing webhook if present
+	err = deleteWebhook(telegramToken)
 	if err != nil {
-		log.Fatalf("Error getting updates channel: %v", err)
+		log.Printf("Error deleting webhook: %v", err)
+	}
+
+	// Set new webhook URL for Vercel
+	webhookURL := "https://your-vercel-url.com" // Replace with your actual Vercel webhook URL
+	err = setWebhook(bot, webhookURL)
+	if err != nil {
+		log.Printf("Error setting webhook: %v", err)
 	}
 
 	// Process updates
-	for update := range updates {
-		if update.Message == nil || update.Message.Text == "" {
-			continue
-		}
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Your update handling code here
+	})
+}
+func deleteWebhook(telegramToken string) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/deleteWebhook", telegramToken)
 
-		go handleMessage(bot, update, apiToken)
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to send deleteWebhook request: %v", err)
 	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to delete webhook, received status code: %d", resp.StatusCode)
+	}
+
+	log.Println("Webhook deleted successfully")
+	return nil
+}
+func setWebhook(bot *tgbotapi.BotAPI, webhookURL string) error {
+	_, err := bot.SetWebhook(tgbotapi.NewWebhook(webhookURL))
+	if err != nil {
+		return fmt.Errorf("failed to set webhook: %v", err)
+	}
+	log.Printf("Webhook set successfully to %s", webhookURL)
+	return nil
 }
 
 func handleMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update, apiToken string) {
