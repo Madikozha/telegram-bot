@@ -15,7 +15,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
-// Response structure for Flan-T5 API
+// Flan-T5 response structure
 type FlanT5Response []struct {
 	GeneratedText string `json:"generated_text"`
 }
@@ -50,10 +50,17 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error setting webhook: %v", err)
 	}
 
-	// Process updates
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Your update handling code here
-	})
+	// Handle incoming updates from Telegram
+	update := tgbotapi.Update{}
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&update); err != nil {
+		log.Printf("Error decoding update: %v", err)
+		http.Error(w, "Error decoding update", http.StatusBadRequest)
+		return
+	}
+
+	// Handle the message
+	handleMessage(bot, update, apiToken)
 }
 
 func deleteWebhook(telegramToken string) error {
@@ -99,57 +106,52 @@ func handleMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update, apiToken string
 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, welcomeMessage)
 		if _, err := bot.Send(msg); err != nil {
 			log.Printf("Error sending welcome message: %v", err)
+		} else {
+			log.Printf("Successfully sent welcome message to user")
 		}
 		return
 	}
 
-	// Send "Processing" action immediately
-	msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Processing your request...")
-	bot.Send(msg)
+	// Send "typing" action
+	action := tgbotapi.NewChatAction(update.Message.Chat.ID, tgbotapi.ChatTyping)
+	if _, err := bot.Send(action); err != nil {
+		log.Printf("Error sending typing action: %v", err)
+	}
 
-	// Process the message asynchronously
-	go func() {
-		// Get response from Flan-T5
-		log.Printf("Sending request to Flan-T5 API...")
-		response, err := getFlanT5Response(apiToken, update.Message.Text)
-		if err != nil {
-			log.Printf("Error getting Flan-T5 response: %v", err)
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, I'm having trouble processing your message. Please try again later.")
-			bot.Send(msg)
-			return
-		}
+	// Get response from Flan-T5
+	log.Printf("Sending request to Flan-T5 API...")
+	response, err := getFlanT5Response(apiToken, update.Message.Text)
+	if err != nil {
+		log.Printf("Error getting Flan-T5 response: %v", err)
+		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, I'm having trouble processing your message. Please try again later.")
+		bot.Send(msg)
+		return
+	}
 
-		log.Printf("Received response from Flan-T5: %s", response)
+	log.Printf("Received response from Flan-T5: %s", response)
 
-		// Send response back to user
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, response)
-		msg.ReplyToMessageID = update.Message.MessageID
-		if _, err := bot.Send(msg); err != nil {
-			log.Printf("Error sending message: %v", err)
-		} else {
-			log.Printf("Successfully sent response to user")
-		}
-	}()
+	// Send response back to user
+	msg := tgbotapi.NewMessage(update.Message.Chat.ID, response)
+	msg.ReplyToMessageID = update.Message.MessageID
+
+	if _, err := bot.Send(msg); err != nil {
+		log.Printf("Error sending message: %v", err)
+	} else {
+		log.Printf("Successfully sent response to user")
+	}
 }
 
 func getFlanT5Response(apiToken, inputText string) (string, error) {
 	const maxRetries = 3
 	const retryDelay = 5 * time.Second
-	const apiURL = "https://api-inference.huggingface.co/models/google/flan-t5-small" // Using a smaller model for faster response
+	const apiURL = "https://api-inference.huggingface.co/models/google/flan-t5-large"
 
-	roles := []string{"What is the biggest lie in the universe? I have read and agreed to the terms and conditions.",
-		"Pretend you are a witty nigga. ",
-		"What was the spider doing on the computer? He was making a web-site!",
-		"I am a Rust programmer",
-		"What shoes do computers love the most? Re-boots!",
-		"Autocorrect can go straight to he’ll.",
-		"How does a computer get drunk? It takes screen shots.",
-	}
+	roles := []string{"What is the biggest lie in the universe?", "Pretend you are a witty person.", "Why did the spider use the computer?"}
 
 	payload := map[string]interface{}{
 		"inputs": roles[rand.Intn(len(roles))] + inputText,
 		"parameters": map[string]interface{}{
-			"max_length":  50, // Shorter response length for faster answers
+			"max_length":  150,
 			"temperature": 0.7,
 			"top_p":       0.85,
 		},
@@ -170,7 +172,7 @@ func getFlanT5Response(apiToken, inputText string) (string, error) {
 	req.Header.Set("Authorization", "Bearer "+apiToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second} // Shorter timeout to prevent long waits
+	client := &http.Client{Timeout: 30 * time.Second}
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
