@@ -47,34 +47,67 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error deleting webhook: %v", err)
 	}
 
-	// Set new webhook URL for Vercel
-	webhookURL := "https://your-vercel-url.com" // Replace with your actual Vercel webhook URL
-	err = setWebhook(bot, webhookURL)
+	// Configure long polling
+	updateConfig := tgbotapi.NewUpdate(0)
+	updateConfig.Timeout = 60 // 60 seconds timeout for long polling
+	updates, err := bot.GetUpdatesChan(updateConfig)
 	if err != nil {
-		log.Printf("Error setting webhook: %v", err)
+		log.Fatalf("Error getting updates: %v", err)
 	}
 
 	// Process updates
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Your update handling code here
-	})
+	for update := range updates {
+		if update.Message == nil {
+			continue
+		}
+		handleMessage(bot, update, apiToken)
+	}
 }
+
 func deleteWebhook(telegramToken string) error {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/deleteWebhook", telegramToken)
 
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err := http.Get(url)
+		if err != nil {
+			log.Printf("Attempt %d: failed to send deleteWebhook request: %v", attempt+1, err)
+			time.Sleep(3 * time.Second) // Retry after delay
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("Attempt %d: failed to delete webhook, received status code: %d", attempt+1, resp.StatusCode)
+			time.Sleep(3 * time.Second) // Retry after delay
+			continue
+		}
+
+		log.Println("Webhook deleted successfully")
+		return nil
+	}
+
+	return fmt.Errorf("failed to delete webhook after 3 attempts: %v", err)
+}
+
+func checkWebhookStatus(telegramToken string) {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getWebhookInfo", telegramToken)
 	resp, err := http.Get(url)
 	if err != nil {
-		return fmt.Errorf("failed to send deleteWebhook request: %v", err)
+		log.Printf("Error checking webhook status: %v", err)
+		return
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to delete webhook, received status code: %d", resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Error reading webhook status response: %v", err)
+		return
 	}
 
-	log.Println("Webhook deleted successfully")
-	return nil
+	log.Printf("Webhook status response: %s", string(body))
 }
+
 func setWebhook(bot *tgbotapi.BotAPI, webhookURL string) error {
 	_, err := bot.SetWebhook(tgbotapi.NewWebhook(webhookURL))
 	if err != nil {
@@ -154,11 +187,11 @@ func getFlanT5Response(apiToken, inputText string) (string, error) {
 	const apiURL = "https://api-inference.huggingface.co/models/google/flan-t5-large"
 
 	roles := []string{"What is the biggest lie in the universe? I have read and agreed to the terms and conditions.",
-		"Pretend you are a witty nigga. ",
+		"Pretend you are a witty person.",
 		"What was the spider doing on the computer? He was making a web-site!",
 		"I am a Rust programmer",
 		"What shoes do computers love the most? Re-boots!",
-		"Autocorrect can go straight to he’ll.",
+		"Autocorrect can go straight to hell.",
 		"How does a computer get drunk? It takes screen shots.",
 	}
 
