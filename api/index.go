@@ -28,10 +28,6 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		log.Fatal("Telegram API token or Hugging Face API token not set")
 	}
 
-	// Log tokens (first few characters only for security)
-	log.Printf("Telegram Token (first 5 chars): %s...", telegramToken[:5])
-	log.Printf("HF API Token (first 5 chars): %s...", apiToken[:5])
-
 	// Initialize Telegram bot
 	bot, err := tgbotapi.NewBotAPI(telegramToken)
 	if err != nil {
@@ -47,65 +43,34 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error deleting webhook: %v", err)
 	}
 
-	// Configure long polling
-	updateConfig := tgbotapi.NewUpdate(0)
-	updateConfig.Timeout = 60 // 60 seconds timeout for long polling
-	updates, err := bot.GetUpdatesChan(updateConfig)
+	// Set new webhook URL for Vercel
+	webhookURL := "https://your-vercel-url.com" // Replace with your actual Vercel webhook URL
+	err = setWebhook(bot, webhookURL)
 	if err != nil {
-		log.Fatalf("Error getting updates: %v", err)
+		log.Printf("Error setting webhook: %v", err)
 	}
 
 	// Process updates
-	for update := range updates {
-		if update.Message == nil {
-			continue
-		}
-		handleMessage(bot, update, apiToken)
-	}
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Your update handling code here
+	})
 }
 
 func deleteWebhook(telegramToken string) error {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/deleteWebhook", telegramToken)
 
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		resp, err := http.Get(url)
-		if err != nil {
-			log.Printf("Attempt %d: failed to send deleteWebhook request: %v", attempt+1, err)
-			time.Sleep(3 * time.Second) // Retry after delay
-			continue
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			log.Printf("Attempt %d: failed to delete webhook, received status code: %d", attempt+1, resp.StatusCode)
-			time.Sleep(3 * time.Second) // Retry after delay
-			continue
-		}
-
-		log.Println("Webhook deleted successfully")
-		return nil
-	}
-
-	return fmt.Errorf("failed to delete webhook after 3 attempts: %v", err)
-}
-
-func checkWebhookStatus(telegramToken string) {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/getWebhookInfo", telegramToken)
 	resp, err := http.Get(url)
 	if err != nil {
-		log.Printf("Error checking webhook status: %v", err)
-		return
+		return fmt.Errorf("failed to send deleteWebhook request: %v", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("Error reading webhook status response: %v", err)
-		return
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to delete webhook, received status code: %d", resp.StatusCode)
 	}
 
-	log.Printf("Webhook status response: %s", string(body))
+	log.Println("Webhook deleted successfully")
+	return nil
 }
 
 func setWebhook(bot *tgbotapi.BotAPI, webhookURL string) error {
@@ -134,71 +99,57 @@ func handleMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update, apiToken string
 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, welcomeMessage)
 		if _, err := bot.Send(msg); err != nil {
 			log.Printf("Error sending welcome message: %v", err)
-		} else {
-			log.Printf("Successfully sent welcome message to user")
 		}
 		return
 	}
 
-	// Check if the message is a reply to the bot
-	if update.Message.ReplyToMessage == nil || update.Message.ReplyToMessage.From == nil {
-		log.Printf("Message is not a reply to the bot. Ignoring.")
-		return
-	}
+	// Send "Processing" action immediately
+	msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Processing your request...")
+	bot.Send(msg)
 
-	// Check if the reply is to the bot itself
-	if update.Message.ReplyToMessage.From.ID != bot.Self.ID {
-		log.Printf("Message is a reply, but not to the bot. Ignoring.")
-		return
-	}
+	// Process the message asynchronously
+	go func() {
+		// Get response from Flan-T5
+		log.Printf("Sending request to Flan-T5 API...")
+		response, err := getFlanT5Response(apiToken, update.Message.Text)
+		if err != nil {
+			log.Printf("Error getting Flan-T5 response: %v", err)
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, I'm having trouble processing your message. Please try again later.")
+			bot.Send(msg)
+			return
+		}
 
-	// Send "typing" action
-	action := tgbotapi.NewChatAction(update.Message.Chat.ID, tgbotapi.ChatTyping)
-	if _, err := bot.Send(action); err != nil {
-		log.Printf("Error sending typing action: %v", err)
-	}
+		log.Printf("Received response from Flan-T5: %s", response)
 
-	// Get response from Flan-T5
-	log.Printf("Sending request to Flan-T5 API...")
-	response, err := getFlanT5Response(apiToken, update.Message.Text)
-	if err != nil {
-		log.Printf("Error getting Flan-T5 response: %v", err)
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, I'm having trouble processing your message. Please try again later.")
-		bot.Send(msg)
-		return
-	}
-
-	log.Printf("Received response from Flan-T5: %s", response)
-
-	// Send response back to user
-	msg := tgbotapi.NewMessage(update.Message.Chat.ID, response)
-	msg.ReplyToMessageID = update.Message.MessageID
-
-	if _, err := bot.Send(msg); err != nil {
-		log.Printf("Error sending message: %v", err)
-	} else {
-		log.Printf("Successfully sent response to user")
-	}
+		// Send response back to user
+		msg := tgbotapi.NewMessage(update.Message.Chat.ID, response)
+		msg.ReplyToMessageID = update.Message.MessageID
+		if _, err := bot.Send(msg); err != nil {
+			log.Printf("Error sending message: %v", err)
+		} else {
+			log.Printf("Successfully sent response to user")
+		}
+	}()
 }
 
 func getFlanT5Response(apiToken, inputText string) (string, error) {
 	const maxRetries = 3
 	const retryDelay = 5 * time.Second
-	const apiURL = "https://api-inference.huggingface.co/models/google/flan-t5-large"
+	const apiURL = "https://api-inference.huggingface.co/models/google/flan-t5-small" // Using a smaller model for faster response
 
 	roles := []string{"What is the biggest lie in the universe? I have read and agreed to the terms and conditions.",
-		"Pretend you are a witty person.",
+		"Pretend you are a witty nigga. ",
 		"What was the spider doing on the computer? He was making a web-site!",
 		"I am a Rust programmer",
 		"What shoes do computers love the most? Re-boots!",
-		"Autocorrect can go straight to hell.",
+		"Autocorrect can go straight to he’ll.",
 		"How does a computer get drunk? It takes screen shots.",
 	}
 
 	payload := map[string]interface{}{
 		"inputs": roles[rand.Intn(len(roles))] + inputText,
 		"parameters": map[string]interface{}{
-			"max_length":  150,
+			"max_length":  50, // Shorter response length for faster answers
 			"temperature": 0.7,
 			"top_p":       0.85,
 		},
@@ -219,7 +170,7 @@ func getFlanT5Response(apiToken, inputText string) (string, error) {
 	req.Header.Set("Authorization", "Bearer "+apiToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second} // Shorter timeout to prevent long waits
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
